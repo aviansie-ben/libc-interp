@@ -139,7 +139,7 @@ interp::Result LibcHostImportDelegate::UnimplCallback(const HostFunc* func,
 
   printf("call to unimplemented host method: ");
   WriteCall(self->stdout_, func->module_name, func->field_name,
-            vec_args, vec_results, interp::Result::Ok);
+            vec_args, vec_results, interp::Result::TrapHostTrapped);
   return interp::Result::TrapHostTrapped;
 }
 
@@ -194,9 +194,11 @@ enum class SyscallNum : int {
   close = 6,
   brk = 45,
   ioctl = 54,
+  munmap = 91,
   llseek = 140,
   readv = 145,
   writev = 146,
+  mmap2 = 192,
   madvise = 219,
   exit_group = 252,
   clock_gettime = 265,
@@ -268,6 +270,16 @@ interp::Result SyscallHandler::HandleSyscall(int n, interp::TypedValue* args, In
                          num_args - 2,
                          return_value);
 
+    case SyscallNum::munmap:
+      if (num_args != 2) {
+        std::cout << "munmap called with invalid arguments\n";
+        return interp::Result::TrapHostTrapped;
+      }
+
+      return HandleMunmap(args[0].value.i32,
+                          args[1].value.i32,
+                          return_value);
+
     case SyscallNum::llseek:
       if (num_args != 5) {
         std::cout << "llseek called with invalid arguments\n";
@@ -302,6 +314,20 @@ interp::Result SyscallHandler::HandleSyscall(int n, interp::TypedValue* args, In
                           args[1].value.i32,
                           args[2].value.i32,
                           return_value);
+
+    case SyscallNum::mmap2:
+      if (num_args != 6) {
+        std::cout << "mmap2 called with invalid arguments\n";
+        return interp::Result::TrapHostTrapped;
+      }
+
+      return HandleMmap(args[0].value.i32,
+                        args[1].value.i32,
+                        args[2].value.i32,
+                        args[3].value.i32,
+                        static_cast<int>(args[4].value.i32),
+                        args[5].value.i32,
+                        return_value);
 
     case SyscallNum::madvise:
       *return_value = static_cast<uint32_t>(-1);
@@ -418,42 +444,60 @@ interp::Result SyscallHandler::HandleClose(int fd, uint32_t* return_value) {
 }
 
 interp::Result SyscallHandler::HandleBrk(uint32_t addr, uint32_t* return_value) {
-  auto* mem = env_->GetMemory(0);
-
-  if (!brk_init_) {
-    brk_ = mem->data.size();
-    brk_init_ = true;
-  }
-
-  if (!addr) {
-    *return_value = brk_;
-    return interp::Result::Ok;
-  }
-
-  uint32_t max_pages = mem->page_limits.has_max ? mem->page_limits.max : WABT_MAX_PAGES;
-  uint32_t cur_pages = mem->page_limits.initial;
-
-  uint32_t new_pages = addr / WABT_PAGE_SIZE;
-  if (addr % WABT_PAGE_SIZE != 0) new_pages++;
-
-  if (new_pages > max_pages) {
-    *return_value = brk_;
-    return interp::Result::Ok;
-  }
-
-  if (new_pages > cur_pages) {
-    mem->data.resize(new_pages * WABT_PAGE_SIZE);
-    mem->page_limits.initial = new_pages;
-  }
-
-  brk_ = addr;
-  *return_value = brk_;
+  *return_value = 0;
   return interp::Result::Ok;
 }
 
 interp::Result SyscallHandler::HandleIoctl(int fd, int cmd, interp::TypedValue* args, Index num_args, uint32_t* return_value) {
   // TODO Implement this?
   *return_value = static_cast<uint32_t>(-1);
+  return interp::Result::Ok;
+}
+
+interp::Result SyscallHandler::HandleMunmap(uint32_t address, uint32_t size, uint32_t* return_value) {
+  auto* mem = env_->GetMemory(0);
+
+  if (address + size < address || address + size > mem->data.size()) {
+    *return_value = static_cast<uint32_t>(-1);
+    return interp::Result::Ok;
+  } else if ((address & 0xfff) != 0 || (size & 0xfff) != 0) {
+    *return_value = static_cast<uint32_t>(-1);
+    return interp::Result::Ok;
+  }
+
+  MmapFreeRegion r;
+
+  r.start = address;
+  r.size = size;
+
+  bool continue_coalescing = true;
+
+  while (continue_coalescing) {
+    continue_coalescing = false;
+
+    for (auto it = mmap_free_regions_.begin(); it != mmap_free_regions_.end(); ++it) {
+      auto& r2 = *it;
+
+      if (r2.start + r2.size == address) {
+        r.start = r2.start;
+        r.size += r2.size;
+        mmap_free_regions_.erase(it);
+
+        continue_coalescing = true;
+        break;
+      } else if (r2.start == address + size) {
+        r.size += r2.size;
+        mmap_free_regions_.erase(it);
+
+        continue_coalescing = true;
+        break;
+      }
+    }
+  }
+
+  mmap_free_regions_.push_back(r);
+
+  *return_value = 0;
   return interp::Result::Ok;
 }
 
@@ -500,6 +544,73 @@ interp::Result SyscallHandler::HandleWritev(int fd, uint32_t vecs, uint32_t num_
     *return_value += bytes_written;
   }
 
+  return interp::Result::Ok;
+}
+
+enum class MmapFlags : uint32_t {
+  Private = 0x02,
+  Anonymous = 0x20
+};
+
+interp::Result SyscallHandler::HandleMmap(uint32_t address,
+                                          uint32_t size,
+                                          uint32_t prot,
+                                          uint32_t flags,
+                                          int fd,
+                                          uint32_t off,
+                                          uint32_t* return_value) {
+  if (flags != (static_cast<uint32_t>(MmapFlags::Private) | static_cast<uint32_t>(MmapFlags::Anonymous))) {
+    *return_value = static_cast<uint32_t>(-1);
+    return interp::Result::Ok;
+  } else if (address != 0 || (size & 0xfff) != 0) {
+    *return_value = static_cast<uint32_t>(-1);
+    return interp::Result::Ok;
+  }
+
+  auto* mem = env_->GetMemory(0);
+
+  for (auto it = mmap_free_regions_.begin(); it != mmap_free_regions_.end(); ++it) {
+    auto& r = *it;
+
+    if (r.size == size) {
+      *return_value = r.start;
+      memset(reinterpret_cast<void*>(mem->data.data() + r.start), 0, size);
+
+      mmap_free_regions_.erase(it);
+      return interp::Result::Ok;
+    } else if (r.size > size) {
+      *return_value = r.start;
+      memset(reinterpret_cast<void*>(mem->data.data() + r.start), 0, size);
+
+      r.start += size;
+      r.size -= size;
+      return interp::Result::Ok;
+    }
+  }
+
+  uint32_t max_pages = mem->page_limits.has_max ? mem->page_limits.max : WABT_MAX_PAGES;
+  uint32_t cur_pages = mem->page_limits.initial;
+
+  uint32_t new_pages = cur_pages + ((size + WABT_PAGE_SIZE - 1) & -WABT_PAGE_SIZE) / WABT_PAGE_SIZE;
+
+  if (new_pages > max_pages) {
+    *return_value = static_cast<uint32_t>(-1);
+    return interp::Result::Ok;
+  }
+
+  mem->data.resize(new_pages * WABT_PAGE_SIZE);
+  mem->page_limits.initial = new_pages;
+
+  if (size != (new_pages - cur_pages) * WABT_PAGE_SIZE) {
+    MmapFreeRegion r;
+
+    r.start = cur_pages * WABT_PAGE_SIZE + size;
+    r.size = (new_pages - cur_pages) * WABT_PAGE_SIZE - size;
+
+    mmap_free_regions_.push_back(r);
+  }
+
+  *return_value = cur_pages * WABT_PAGE_SIZE;
   return interp::Result::Ok;
 }
 

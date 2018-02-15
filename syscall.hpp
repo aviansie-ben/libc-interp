@@ -7,6 +7,11 @@
 
 namespace wabt {
 
+struct MmapFreeRegion {
+    uint32_t start;
+    uint32_t size;
+};
+
 class SyscallHandler {
   public:
     SyscallHandler(interp::Environment* env) : env_(env) {}
@@ -28,10 +33,11 @@ class SyscallHandler {
     interp::Result HandleLlseek(int fd, uint32_t off_hi, uint32_t off_lo, uint32_t result, uint32_t whence, uint32_t* return_value);
     interp::Result HandleReadv(int fd, uint32_t vecs, uint32_t num_vecs, uint32_t* return_value);
     interp::Result HandleWritev(int fd, uint32_t vecs, uint32_t num_vecs, uint32_t* return_value);
+    interp::Result HandleMmap(uint32_t address, uint32_t length, uint32_t prot, uint32_t flags, int fd, uint32_t off, uint32_t* return_value);
+    interp::Result HandleMunmap(uint32_t address, uint32_t length, uint32_t* return_value);
     interp::Result HandleClockGetTime(uint32_t clock_id, uint32_t res, uint32_t* return_value);
 
-    bool brk_init_ = false;
-    uint32_t brk_;
+    std::vector<MmapFreeRegion> mmap_free_regions_;
     interp::Environment* env_;
 };
 
