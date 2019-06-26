@@ -24,12 +24,12 @@
 #include <vector>
 
 #include "syscall.hpp"
-#include "src/binary-reader-interp.h"
 #include "src/binary-reader.h"
 #include "src/cast.h"
-#include "src/error-handler.h"
+#include "src/error-formatter.h"
 #include "src/feature.h"
-#include "src/interp.h"
+#include "src/interp/binary-reader-interp.h"
+#include "src/interp/interp.h"
 #include "src/literal.h"
 #include "src/option-parser.h"
 #include "src/resolve-names.h"
@@ -37,8 +37,6 @@
 #include "src/validator.h"
 #include "src/wast-lexer.h"
 #include "src/wast-parser.h"
-
-#include "Jit.hpp"
 
 using namespace wabt;
 using namespace wabt::interp;
@@ -49,6 +47,7 @@ static Thread::Options s_thread_options;
 static Stream* s_trace_stream;
 static bool s_disable_jit;
 static bool s_trap_on_failed_comp;
+static bool s_no_stack_trace;
 static uint32_t s_jit_threshold = 1;
 static Features s_features;
 
@@ -66,13 +65,13 @@ static const char s_description[] =
 
 examples:
   # parse binary file test.wasm, and run it
-  $ wasm-interp test.wasm
+  $ libc-interp test.wasm
 
   # parse test.wasm, run it and trace the output
-  $ wasm-interp test.wasm --trace
+  $ libc-interp test.wasm --trace
 
   # parse test.wasm and run it, setting the value stack size to 100 elements
-  $ wasm-interp test.wasm -V 100
+  $ libc-interp test.wasm -V 100
 )";
 
 static void ParseOptions(int argc, char** argv) {
@@ -110,6 +109,9 @@ static void ParseOptions(int argc, char** argv) {
                      // TODO(thomasbc): validate
                      s_jit_threshold = atoi(argument.c_str());
                    });
+  parser.AddOption("no-stack-trace",
+                   "Don't print a stack trace if a trap occurs",
+                   []() { s_no_stack_trace = true; });
 
   parser.AddArgument("filename", OptionParser::ArgumentCount::One,
                      [](const char* argument) { s_infile = argument; });
@@ -128,7 +130,7 @@ static void RunStart(interp::Module* module,
   if (verbose == RunVerbosity::Verbose) {
     WriteCall(s_stdout_stream.get(), string_view(), e->name, args,
               exec_result.values, exec_result.result);
-    if (exec_result.result != interp::Result::Ok) {
+    if (!s_no_stack_trace && exec_result.result != interp::Result::Ok) {
       exec_result.PrintCallStack(s_stdout_stream.get(), env);
     }
   }
@@ -136,7 +138,7 @@ static void RunStart(interp::Module* module,
 
 static wabt::Result ReadModule(const char* module_filename,
                                Environment* env,
-                               ErrorHandler* error_handler,
+                               Errors* errors,
                                DefinedModule** out_module) {
   wabt::Result result;
   std::vector<uint8_t> file_data;
@@ -147,22 +149,23 @@ static wabt::Result ReadModule(const char* module_filename,
   if (Succeeded(result)) {
     const bool kReadDebugNames = true;
     const bool kStopOnFirstError = true;
+    const bool kFailOnCustomSectionError = true;
     ReadBinaryOptions options(s_features, s_log_stream.get(), kReadDebugNames,
-                              kStopOnFirstError);
-    result = ReadBinaryInterp(env, DataOrNull(file_data), file_data.size(),
-                              &options, error_handler, out_module);
+                              kStopOnFirstError, kFailOnCustomSectionError);
+    result = ReadBinaryInterp(env, file_data.data(), file_data.size(), options,
+                              errors, out_module);
 
     if (Succeeded(result)) {
-      if (s_verbose)
+      if (s_verbose) {
         env->DisassembleModule(s_stdout_stream.get(), *out_module);
+      }
     }
   }
   return result;
 }
 
-static void InitEnvironment(Environment* env) {
-  HostModule* host_module = env->AppendHostModule("env");
-  host_module->import_delegate.reset(new LibcHostImportDelegate(s_stdout_stream.get(), env));
+static void InitEnvironment(Environment* env, SyscallHandler* sys) {
+  sys->RegisterOnModule(env->AppendHostModule("env"));
 
   if (s_disable_jit) {
     env->enable_jit = false;
@@ -177,11 +180,13 @@ static void InitEnvironment(Environment* env) {
 static wabt::Result ReadAndRunModule(const char* module_filename) {
   wabt::Result result;
   Environment env;
-  InitEnvironment(&env);
+  SyscallHandler sys(&env);
+  InitEnvironment(&env, &sys);
 
-  ErrorHandlerFile error_handler(Location::Type::Binary);
+  Errors errors;
   DefinedModule* module = nullptr;
-  result = ReadModule(module_filename, &env, &error_handler, &module);
+  result = ReadModule(module_filename, &env, &errors, &module);
+  FormatErrorsToFile(errors, Location::Type::Binary);
   if (Succeeded(result)) {
     Executor executor(&env, s_trace_stream, s_thread_options);
     ExecResult exec_result = executor.RunStartFunction(module);
@@ -190,7 +195,9 @@ static wabt::Result ReadAndRunModule(const char* module_filename) {
     } else {
       WriteResult(s_stdout_stream.get(), "error running start function",
                   exec_result.result);
-      exec_result.PrintCallStack(s_stdout_stream.get(), &env);
+      if (!s_no_stack_trace) {
+        exec_result.PrintCallStack(s_stdout_stream.get(), &env);
+      }
     }
   }
   return result;

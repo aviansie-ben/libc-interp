@@ -27,166 +27,6 @@ namespace wabt {
   WABT_PRINTF_STRING_VIEW_ARG((x).module_name) \
   , WABT_PRINTF_STRING_VIEW_ARG((x).field_name)
 
-wabt::Result LibcHostImportDelegate::ImportFunc(interp::FuncImport* import,
-                                                interp::Func* func,
-                                                interp::FuncSignature* func_sig,
-                                                const ErrorCallback& callback) {
-  auto register_syscall = [&]() {
-    if (!IsValidSyscallSig(func_sig)) {
-      PrintError(callback, "invalid syscall signature");
-      return wabt::Result::Error;
-    }
-
-    cast<HostFunc>(func)->callback = SyscallCallback;
-    return wabt::Result::Ok;
-  };
-
-  cast<HostFunc>(func)->user_data = this;
-  if (import->field_name == "__syscall") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall0") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall1") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall2") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall3") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall4") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall5") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall6") {
-    return register_syscall();
-  } else if (import->field_name == "__syscall_cp_asm") {
-    return register_syscall();
-  } else if (import->field_name == "longjmp") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "setjmp") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_RaiseException") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_DeleteException") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_SetGR") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_SetIP") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_GetLanguageSpecificData") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_GetIP") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else if (import->field_name == "_Unwind_GetRegionStart") {
-    cast<HostFunc>(func)->callback = UnimplCallback;
-    return wabt::Result::Ok;
-  } else {
-    PrintError(callback, "unknown host function import " PRIimport,
-               PRINTF_IMPORT_ARG(*import));
-    return wabt::Result::Error;
-  }
-}
-
-wabt::Result LibcHostImportDelegate::ImportTable(interp::TableImport* import,
-                                                 interp::Table* table,
-                                                 const ErrorCallback& callback) {
-  return wabt::Result::Error;
-}
-
-wabt::Result LibcHostImportDelegate::ImportMemory(interp::MemoryImport* import,
-                                                  interp::Memory* memory,
-                                                  const ErrorCallback& callback) {
-  return wabt::Result::Error;
-}
-
-wabt::Result LibcHostImportDelegate::ImportGlobal(interp::GlobalImport* import,
-                                                  interp::Global* global,
-                                                  const ErrorCallback& callback) {
-  if (import->field_name == "__cp_begin") {
-    return wabt::Result::Ok;
-  } else if (import->field_name == "__cp_end") {
-    return wabt::Result::Ok;
-  } else if (import->field_name == "__cp_cancel") {
-    return wabt::Result::Ok;
-  } else {
-    PrintError(callback, "unknown host global import " PRIimport,
-               PRINTF_IMPORT_ARG(*import));
-    return wabt::Result::Error;
-  }
-}
-
-interp::Result LibcHostImportDelegate::UnimplCallback(const HostFunc* func,
-                                                      const interp::FuncSignature* sig,
-                                                      Index num_args,
-                                                      TypedValue* args,
-                                                      Index num_results,
-                                                      TypedValue* out_results,
-                                                      void* user_data) {
-  auto self = reinterpret_cast<LibcHostImportDelegate*>(user_data);
-  memset(out_results, 0, sizeof(TypedValue) * num_results);
-  for (Index i = 0; i < num_results; ++i)
-    out_results[i].type = sig->result_types[i];
-
-  TypedValues vec_args(args, args + num_args);
-  TypedValues vec_results(out_results, out_results + num_results);
-
-  printf("call to unimplemented host method: ");
-  WriteCall(self->stdout_, func->module_name, func->field_name,
-            vec_args, vec_results, interp::Result::TrapHostTrapped);
-  return interp::Result::TrapHostTrapped;
-}
-
-interp::Result LibcHostImportDelegate::SyscallCallback(const HostFunc* func,
-                                                       const FuncSignature* sig,
-                                                       Index num_args,
-                                                       TypedValue* args,
-                                                       Index num_results,
-                                                       TypedValue* out_results,
-                                                       void* user_data) {
-  auto self = reinterpret_cast<LibcHostImportDelegate*>(user_data);
-
-  assert(IsValidSyscallSig(sig));
-  assert(num_args != 0);
-  assert(num_results == 1);
-
-  out_results[0].type = Type::I32;
-
-  auto result = self->syscall_.HandleSyscall(static_cast<int>(args[0].value.i32),
-                                             args + 1,
-                                             num_args - 1,
-                                             &out_results[0].value.i32);
-  return result;
-}
-
-bool LibcHostImportDelegate::IsValidSyscallSig(const FuncSignature* sig) {
-  if (sig->param_types.size() == 0) {
-    return false;
-  }
-
-  for (const auto& param_type : sig->param_types) {
-    if (param_type != Type::I32) {
-      return false;
-    }
-  }
-
-  if (sig->result_types.size() != 1) {
-    return false;
-  }
-
-  if (sig->result_types[0] != Type::I32) {
-    return false;
-  }
-
-  return true;
-}
-
 enum class SyscallNum : int {
   read = 3,
   write = 4,
@@ -210,7 +50,47 @@ struct IoVec {
   uint32_t len;
 };
 
-interp::Result SyscallHandler::HandleSyscall(int n, interp::TypedValue* args, Index num_args, uint32_t* return_value) {
+interp::HostFunc::Callback CreateSysCallback(SyscallHandler* sys) {
+  return [=](const interp::HostFunc*, const interp::FuncSignature*, const TypedValues& args, TypedValues& results) {
+    results[0].type = Type::I32;
+    return sys->HandleSyscall(args.at(0).value.i32, args.data() + 1, args.size() - 1, &results.at(0).value.i32);
+  };
+}
+
+interp::HostFunc::Callback CreateUnimplCallback(const char* name) {
+  return [=](const interp::HostFunc*, const interp::FuncSignature*, const TypedValues&, TypedValues&) {
+    std::cout << "call to unimplemented " << name << "\n";
+    return interp::Result::TrapHostTrapped;
+  };
+}
+
+void SyscallHandler::RegisterOnModule(interp::HostModule* module) {
+  module->AppendFuncExport("__syscall0", {{Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall1", {{Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall2", {{Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall3", {{Type::I32, Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall4", {{Type::I32, Type::I32, Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall5", {{Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall6", {{Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall", {{Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+  module->AppendFuncExport("__syscall_cp_asm", {{Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32, Type::I32}, {Type::I32}}, CreateSysCallback(this));
+
+  module->AppendFuncExport("longjmp", {{Type::I32, Type::I32}, {}}, CreateUnimplCallback("longjmp"));
+  module->AppendFuncExport("setjmp", {{Type::I32}, {Type::I32}}, CreateUnimplCallback("setjmp"));
+  module->AppendFuncExport("_Unwind_RaiseException", {{Type::I32}, {Type::I32}}, CreateUnimplCallback("_Unwind_RaiseException"));
+  module->AppendFuncExport("_Unwind_DeleteException", {{Type::I32}, {}}, CreateUnimplCallback("_Unwind_DeleteException"));
+  module->AppendFuncExport("_Unwind_GetLanguageSpecificData", {{Type::I32}, {Type::I32}}, CreateUnimplCallback("_Unwind_GetLanguageSpecificData"));
+  module->AppendFuncExport("_Unwind_GetIP", {{Type::I32}, {Type::I32}}, CreateUnimplCallback("_Unwind_GetIP"));
+  module->AppendFuncExport("_Unwind_GetRegionStart", {{Type::I32}, {Type::I32}}, CreateUnimplCallback("_Unwind_GetRegionStart"));
+  module->AppendFuncExport("_Unwind_SetGR", {{Type::I32, Type::I32, Type::I32}, {}}, CreateUnimplCallback("_Unwind_SetGR"));
+  module->AppendFuncExport("_Unwind_SetIP", {{Type::I32, Type::I32}, {}}, CreateUnimplCallback("_Unwind_SetIP"));
+
+  module->AppendGlobalExport("__cp_begin", false, uint32_t(0));
+  module->AppendGlobalExport("__cp_end", false, uint32_t(0));
+  module->AppendGlobalExport("__cp_cancel", false, uint32_t(0));
+}
+
+interp::Result SyscallHandler::HandleSyscall(int n, const interp::TypedValue* args, Index num_args, uint32_t* return_value) {
   switch (static_cast<SyscallNum>(n)) {
     case SyscallNum::read:
       if (num_args != 3) {
@@ -448,7 +328,7 @@ interp::Result SyscallHandler::HandleBrk(uint32_t addr, uint32_t* return_value) 
   return interp::Result::Ok;
 }
 
-interp::Result SyscallHandler::HandleIoctl(int fd, int cmd, interp::TypedValue* args, Index num_args, uint32_t* return_value) {
+interp::Result SyscallHandler::HandleIoctl(int fd, int cmd, const interp::TypedValue* args, Index num_args, uint32_t* return_value) {
   // TODO Implement this?
   *return_value = static_cast<uint32_t>(-1);
   return interp::Result::Ok;
@@ -621,11 +501,6 @@ interp::Result SyscallHandler::HandleClockGetTime(uint32_t clock_id, uint32_t re
   *return_value = clock_gettime(clock_id, res_p);
 
   return interp::Result::Ok;
-}
-
-void LibcHostImportDelegate::PrintError(const ErrorCallback& callback, const char* format, ...) {
-  WABT_SNPRINTF_ALLOCA(buffer, length, format);
-  callback(buffer);
 }
 
 }
