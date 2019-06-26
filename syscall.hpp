@@ -36,6 +36,7 @@ class SyscallHandler {
     interp::Result HandleWritev(int fd, uint32_t vecs, uint32_t num_vecs, uint32_t* return_value);
     interp::Result HandleMmap(uint32_t address, uint32_t length, uint32_t prot, uint32_t flags, int fd, uint32_t off, uint32_t* return_value);
     interp::Result HandleMunmap(uint32_t address, uint32_t length, uint32_t* return_value);
+    interp::Result HandleMremap(uint32_t old_addr, uint32_t old_sz, uint32_t new_sz, uint32_t flags, uint32_t new_addr, uint32_t* return_value);
     interp::Result HandleClockGetTime(uint32_t clock_id, uint32_t res, uint32_t* return_value);
 
     std::vector<MmapFreeRegion> mmap_free_regions_;

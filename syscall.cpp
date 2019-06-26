@@ -38,6 +38,7 @@ enum class SyscallNum : int {
   llseek = 140,
   readv = 145,
   writev = 146,
+  mremap = 163,
   mmap2 = 192,
   madvise = 219,
   exit_group = 252,
@@ -193,6 +194,19 @@ interp::Result SyscallHandler::HandleSyscall(int n, const interp::TypedValue* ar
       return HandleWritev(static_cast<int>(args[0].value.i32),
                           args[1].value.i32,
                           args[2].value.i32,
+                          return_value);
+
+    case SyscallNum::mremap:
+      if (num_args != 5) {
+        std::cout << "mremap called with invalid arguments\n";
+        return interp::Result::TrapHostTrapped;
+      }
+
+      return HandleMremap(args[0].value.i32,
+                          args[1].value.i32,
+                          args[2].value.i32,
+                          args[3].value.i32,
+                          args[4].value.i32,
                           return_value);
 
     case SyscallNum::mmap2:
@@ -378,6 +392,11 @@ interp::Result SyscallHandler::HandleMunmap(uint32_t address, uint32_t size, uin
   mmap_free_regions_.push_back(r);
 
   *return_value = 0;
+  return interp::Result::Ok;
+}
+
+interp::Result SyscallHandler::HandleMremap(uint32_t old_addr, uint32_t old_sz, uint32_t new_sz, uint32_t flags, uint32_t new_addr, uint32_t* return_value) {
+  *return_value = 0xffffffffu;
   return interp::Result::Ok;
 }
 
