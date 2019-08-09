@@ -166,20 +166,25 @@ static wabt::Result ReadModule(const char* module_filename,
 
 static void InitEnvironment(Environment* env, SyscallHandler* sys) {
   sys->RegisterOnModule(env->AppendHostModule("env"));
+}
 
-  if (s_disable_jit) {
-    env->enable_jit = false;
-  }
-  if (s_trap_on_failed_comp) {
-    env->trap_on_failed_comp = true;
-  }
+static wabt::jit::Options CreateJitOptions() {
+  wabt::jit::Options options;
 
-  env->jit_threshold = s_jit_threshold;
+  if (s_disable_jit)
+    options.enabled = false;
+
+  if (s_trap_on_failed_comp)
+    options.trap_on_failed_comp = true;
+
+  options.jit_threshold = s_jit_threshold;
+
+  return options;
 }
 
 static wabt::Result ReadAndRunModule(const char* module_filename) {
   wabt::Result result;
-  Environment env;
+  Environment env(CreateJitOptions());
   SyscallHandler sys(&env);
   InitEnvironment(&env, &sys);
 
